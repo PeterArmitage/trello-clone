@@ -1,5 +1,4 @@
-# app/schemas.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from datetime import datetime
 from typing import List, Optional
 
@@ -62,3 +61,28 @@ class Card(CardBase):
 
     class Config:
         from_attributes = True
+        
+class CardMove(BaseModel):
+    new_list_id: int
+            
+class UserBase(BaseModel):
+    username: str
+    email: EmailStr
+
+class UserCreate(UserBase):
+    password: str
+
+class User(UserBase):
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None        

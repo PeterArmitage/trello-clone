@@ -1,8 +1,11 @@
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from . import models, schemas
+from . import models, schemas, auth
 from .database import get_db
+from datetime import timedelta
+from typing import List
 
 router = APIRouter()
 
@@ -140,3 +143,75 @@ def delete_card(card_id: int, db: Session = Depends(get_db)):
     db.delete(db_card)
     db.commit()
     return db_card
+
+@router.put("/cards/{card_id}/move", response_model=schemas.Card)
+async def move_card(
+    card_id: int,
+    new_list_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    
+ # First, get the card
+    card = db.query(models.Card).filter(models.Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    # Check if the user has permission to move this card
+    # (You might want to implement a more sophisticated permission system)
+    board = db.query(models.Board).join(models.List).filter(models.List.id == card.list_id).first()
+    if board.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to move this card")
+
+    # Check if the new list exists and belongs to the same board
+    new_list = db.query(models.List).filter(models.List.id == new_list_id).first()
+    if not new_list or new_list.board_id != board.id:
+        raise HTTPException(status_code=400, detail="Invalid new list ID")
+
+    # Move the card
+    card.list_id = new_list_id
+    db.commit()
+    db.refresh(card)
+
+    return card
+#users
+
+@router.post("/users/", response_model=schemas.User)
+def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(models.User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    hashed_password = auth.get_password_hash(user.password)
+    db_user = models.User(username=user.username, email=user.email, hashed_password=hashed_password)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@router.get("/users/me/", response_model=schemas.User)
+async def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
+    return current_user
+
+@router.get("/users/me/boards", response_model=List[schemas.Board])
+async def read_user_boards(current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    boards = db.query(models.Board).filter(models.Board.owner_id == current_user.id).all()
+    return boards
+
+#token
+
+@router.post("/token", response_model=schemas.Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = auth.authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = auth.create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
