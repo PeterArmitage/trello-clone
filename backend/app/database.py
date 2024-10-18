@@ -1,29 +1,20 @@
-import os
-from urllib.parse import quote_plus
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+import os
+from dotenv import load_dotenv
+from urllib.parse import quote_plus
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Get database connection parameters
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = quote_plus(os.getenv("DB_PASSWORD"))  # URL-encode the password
-DB_HOST = os.getenv("DB_HOST")
-DB_NAME = os.getenv("DB_NAME")
 
-# Construct the database URL
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}"
+db_password = quote_plus(os.getenv('DB_PASSWORD', ''))
 
-# Create the SQLAlchemy engine
-engine = create_engine(DATABASE_URL)
+SQLALCHEMY_DATABASE_URL = f"postgresql://{os.getenv('DB_USER')}:{db_password}@{os.getenv('DB_HOST')}/{os.getenv('DB_NAME')}"
 
-# Create a SessionLocal class
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Create a Base class
 Base = declarative_base()
 
 def get_db():

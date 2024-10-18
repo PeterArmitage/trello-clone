@@ -1,4 +1,4 @@
-
+import os
 from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -7,10 +7,11 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from . import models, schemas
 from .database import get_db
+from dotenv import load_dotenv
 
+load_dotenv()
 
-SECRET_KEY = "bb77b1f0c857a816f2a95db7a0d444c1a2888b791f0fda22a56074abcc614de8"
-
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
