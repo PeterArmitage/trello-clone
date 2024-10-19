@@ -8,7 +8,7 @@ from . import models, schemas, auth
 from .database import get_db
 from datetime import datetime, timedelta
 from typing import List, Optional
-from sqlalchemy import func, desc, or_
+from sqlalchemy import func, desc, or_, asc
 from .exceptions import NotFoundException, ForbiddenException, BadRequestException
 
 UPLOAD_DIR = "uploads"
@@ -19,8 +19,8 @@ router = APIRouter()
 
 # Create a new board
 @router.post("/boards/", response_model=schemas.Board)
-def create_board(board: schemas.BoardCreate, db: Session = Depends(get_db)):
-    db_board = models.Board(title=board.title)
+def create_board(board: schemas.BoardCreate, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    db_board = models.Board(title=board.title, owner_id=current_user.id)
     db.add(db_board)
     db.commit()
     db.refresh(db_board)
@@ -141,7 +141,7 @@ async def create_board_template(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    db_template = models.BoardTemplate(**template.dict(), created_by=current_user.id)
+    db_template = models.BoardTemplate(**template.model_dump(), created_by=current_user.id)
     db.add(db_template)
     db.commit()
     db.refresh(db_template)
@@ -175,7 +175,7 @@ async def create_board_from_template(
 @router.post("/lists/", response_model=schemas.List)
 def create_list(list: schemas.ListCreate, db: Session = Depends(get_db)):
     # Create a new List object from the provided data
-    db_list = models.List(**list.dict())
+    db_list = models.List(**list.model_dump())
     # Add the new list to the database
     db.add(db_list)
     # Commit the changes to the database
@@ -256,7 +256,7 @@ def read_cards_for_list(
 # Card routes
 @router.post("/cards/", response_model=schemas.Card)
 def create_card(card: schemas.CardCreate, db: Session = Depends(get_db)):
-    db_card = models.Card(**card.dict())
+    db_card = models.Card(**card.model_dump())
     db.add(db_card)
     db.commit()
     db.refresh(db_card)
@@ -302,21 +302,22 @@ async def move_card(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-
- # First, get the card
+    print(f"Moving card {card_id} to list {new_list_id} for user {current_user.id}")
     card = db.query(models.Card).filter(models.Card.id == card_id).first()
     if not card:
+        print(f"Card {card_id} not found")
         raise HTTPException(status_code=404, detail="Card not found")
 
     # Check if the user has permission to move this card
-
     board = db.query(models.Board).join(models.List).filter(models.List.id == card.list_id).first()
-    if board.owner_id != current_user.id:
+    print(f"Board owner_id: {board.owner_id}, Current user id: {current_user.id}")
+    if not board or board.owner_id != current_user.id:
+        print(f"User {current_user.id} not authorized to move card {card_id}")
         raise HTTPException(status_code=403, detail="Not authorized to move this card")
 
     # Check if the new list exists and belongs to the same board
-    new_list = db.query(models.List).filter(models.List.id == new_list_id).first()
-    if not new_list or new_list.board_id != board.id:
+    new_list = db.query(models.List).filter(models.List.id == new_list_id, models.List.board_id == board.id).first()
+    if not new_list:
         raise HTTPException(status_code=400, detail="Invalid new list ID")
 
     # Move the card
@@ -340,7 +341,7 @@ async def add_label_to_card(
     if not card:
         raise HTTPException(status_code=404, detail="Card not found")
 
-    new_label = models.Label(**label.dict(), card_id=card_id)
+    new_label = models.Label(**label.model_dump(), card_id=card_id)
     db.add(new_label)
     db.commit()
     db.refresh(card)
@@ -362,7 +363,7 @@ def create_cards_batch(
         if not list_obj:
             raise HTTPException(status_code=404, detail="List not found or access denied")
         
-        db_card = models.Card(**card_data.dict())
+        db_card = models.Card(**card_data.model_dump())
         db.add(db_card)
         created_cards.append(db_card)
     
@@ -462,12 +463,13 @@ async def search(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
+    print(f"Searching for '{query}' for user {current_user.id}")
     # Search in boards
     boards = db.query(models.Board).filter(
         models.Board.owner_id == current_user.id,
         models.Board.title.ilike(f"%{query}%")
     ).all()
-
+    print(f"Found {len(boards)} boards")
     # Search in lists
     lists = db.query(models.List).join(models.Board).filter(
         models.Board.owner_id == current_user.id,
@@ -488,7 +490,7 @@ async def search(
         *[schemas.SearchResult(type="list", id=l.id, title=l.title) for l in lists],
         *[schemas.SearchResult(type="card", id=c.id, title=c.title) for c in cards]
     ]
-
+    print(f"Total search results: {len(results)}")
     return results
 @router.get("/search/cards", response_model=List[schemas.Card])
 async def search_cards(
