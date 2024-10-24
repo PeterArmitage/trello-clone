@@ -17,14 +17,14 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-models.Base.metadata.create_all(bind=engine)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
     try:
-        r = redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
+        r = await redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
         await r.ping()  # Test the connection
         await FastAPILimiter.init(r)
         app.state.use_redis = True
@@ -35,7 +35,8 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    
+    if app.state.use_redis:
+        await FastAPILimiter.close()
     
 
 app = FastAPI(lifespan=lifespan)

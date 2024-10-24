@@ -3,7 +3,13 @@ from datetime import datetime
 from typing import List as PyList, Optional
 from enum import Enum
 from pydantic.config import ConfigDict
+from .models import PermissionLevel
 
+class PermissionLevel(str, Enum):
+    VIEW = "view"
+    EDIT = "edit"
+    ADMIN = "admin"
+    
 class BoardBase(BaseModel):
     title: str
 
@@ -82,7 +88,8 @@ class ActivityType(str, Enum):
     CARD_CREATED = "card_created"
     CARD_MOVED = "card_moved"
     CARD_ARCHIVED = "card_archived"
-
+    LIST_CREATED = "list_created"
+    
 class Activity(BaseModel):
     id: int
     board_id: int
@@ -161,3 +168,25 @@ class User(UserBase):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)     
+    
+class CommentCreate(BaseModel):
+    content: str
+
+class Comment(CommentCreate):
+    id: int
+    card_id: int
+    user_id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)  
+    
+class BoardMemberCreate(BaseModel):
+    user_id: int
+    permission_level: str
+
+class BoardMember(BoardMemberCreate):
+    id: int
+    board_id: int
+
+    model_config = ConfigDict(from_attributes=True)      

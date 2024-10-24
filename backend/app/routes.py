@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -8,9 +7,12 @@ from . import models, schemas, auth
 from .database import get_db
 from datetime import datetime, timedelta
 from typing import List, Optional
-from sqlalchemy import func, desc, or_, asc
+from sqlalchemy import func, desc, or_, asc, and_
 from .exceptions import NotFoundException, ForbiddenException, BadRequestException
+from .models import PermissionLevel
+import logging
 
+logger = logging.getLogger(__name__)
 UPLOAD_DIR = "uploads"
 # Create an APIRouter instance
 router = APIRouter()
@@ -20,7 +22,7 @@ router = APIRouter()
 # Create a new board
 @router.post("/boards/", response_model=schemas.Board)
 def create_board(board: schemas.BoardCreate, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
-    db_board = models.Board(title=board.title, owner_id=current_user.id)
+    db_board = models.Board(**board.model_dump(), owner_id=current_user.id)
     db.add(db_board)
     db.commit()
     db.refresh(db_board)
@@ -37,49 +39,122 @@ def read_boards(
     return boards
 
 # Get a specific board by ID
+
 @router.get("/boards/{board_id}", response_model=schemas.Board)
-def read_board(board_id: int, db: Session = Depends(get_db)):
-    db_board = db.query(models.Board).filter(models.Board.id == board_id).first()
-    if db_board is None:
-        raise HTTPException(status_code=404, detail="Board not found")
-    return db_board
+def read_board(board_id: int, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    board = db.query(models.Board).filter(models.Board.id == board_id).first()
+    if board is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+    
+    print(f"Board owner_id: {board.owner_id}, Current user id: {current_user.id}")  # Debug print
+    
+    if board.owner_id != current_user.id:
+        member = db.query(models.BoardMember).filter(
+            models.BoardMember.board_id == board_id,
+            models.BoardMember.user_id == current_user.id
+        ).first()
+        if not member:
+            print(f"User {current_user.id} not authorized to access board {board_id}")  # Debug print
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to access this board")
+    
+    return board
 
 # Update a board
 @router.put("/boards/{board_id}", response_model=schemas.Board)
-def update_board(board_id: int, board: schemas.BoardUpdate, db: Session = Depends(get_db)):
+def update_board(
+    board_id: int, 
+    board: schemas.BoardUpdate, 
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    logger.info(f"Updating board {board_id} for user {current_user.username} (id: {current_user.id})")
+    
     db_board = db.query(models.Board).filter(models.Board.id == board_id).first()
     if db_board is None:
         raise HTTPException(status_code=404, detail="Board not found")
+    
+    logger.info(f"Board owner_id: {db_board.owner_id}, Current user id: {current_user.id}")
+    
+    if db_board.owner_id != current_user.id:
+        member = db.query(models.BoardMember).filter(
+            models.BoardMember.board_id == board_id,
+            models.BoardMember.user_id == current_user.id
+        ).first()
+        
+        logger.info(f"Board member found: {member}")
+        if member:
+            logger.info(f"Member permission level: {member.permission_level}")
+            
+        if not member or member.permission_level == PermissionLevel.VIEW:
+            logger.warning(f"User {current_user.id} not authorized to update board {board_id}")
+            raise ForbiddenException(detail="Not authorized to update this board")
+    
     for var, value in vars(board).items():
         setattr(db_board, var, value) if value else None
     db.add(db_board)
     db.commit()
     db.refresh(db_board)
+    logger.info(f"Board {board_id} updated successfully")
     return db_board
+
+@router.get("/boards/{board_id}/members", response_model=List[schemas.BoardMember])
+def get_board_members(
+    board_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    board = db.query(models.Board).filter(models.Board.id == board_id).first()
+    if not board:
+        raise HTTPException(status_code=404, detail="Board not found")
+        
+    if board.owner_id != current_user.id:
+        member = db.query(models.BoardMember).filter(
+            models.BoardMember.board_id == board_id,
+            models.BoardMember.user_id == current_user.id
+        ).first()
+        if not member:
+            raise ForbiddenException(detail="Not authorized to view this board's members")
+            
+    members = db.query(models.BoardMember).filter(models.BoardMember.board_id == board_id).all()
+    return members
 
 # Delete a board
 @router.delete("/boards/{board_id}", response_model=schemas.Board)
-def delete_board(board_id: int, db: Session = Depends(get_db)):
+def delete_board(
+    board_id: int, 
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
     db_board = db.query(models.Board).filter(models.Board.id == board_id).first()
     if db_board is None:
         raise HTTPException(status_code=404, detail="Board not found")
+    
+    if db_board.owner_id != current_user.id:
+        raise ForbiddenException(detail="Not authorized to delete this board")
+    
     db.delete(db_board)
     db.commit()
     return db_board
 
-# Get a board with user authentication
-@router.get("/boards/{board_id}", response_model=schemas.Board)
-def read_board(board_id: int, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
-    db_board = db.query(models.Board).filter(models.Board.id == board_id).first()
-    if db_board is None:
-        raise NotFoundException(detail="Board not found")
-    if db_board.owner_id != current_user.id:
-        raise ForbiddenException(detail="Not authorized to access this board")
-    return db_board
-
 # Get all lists for a specific board
 @router.get("/boards/{board_id}/lists", response_model=list[schemas.List])
-def read_lists_for_board(board_id: int, db: Session = Depends(get_db)):
+def read_lists_for_board(
+    board_id: int, 
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    board = db.query(models.Board).filter(models.Board.id == board_id).first()
+    if board is None:
+        raise HTTPException(status_code=404, detail="Board not found")
+    
+    if board.owner_id != current_user.id:
+        member = db.query(models.BoardMember).filter(
+            models.BoardMember.board_id == board_id,
+            models.BoardMember.user_id == current_user.id
+        ).first()
+        if not member:
+            raise ForbiddenException(detail="Not authorized to access this board")
+    
     lists = db.query(models.List).filter(models.List.board_id == board_id).all()
     return lists
 
@@ -90,9 +165,17 @@ async def get_board_activity(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    board = db.query(models.Board).filter(models.Board.id == board_id, models.Board.owner_id == current_user.id).first()
+    board = db.query(models.Board).filter(models.Board.id == board_id).first()
     if not board:
         raise HTTPException(status_code=404, detail="Board not found")
+    
+    if board.owner_id != current_user.id:
+        member = db.query(models.BoardMember).filter(
+            models.BoardMember.board_id == board_id,
+            models.BoardMember.user_id == current_user.id
+        ).first()
+        if not member:
+            raise ForbiddenException(detail="Not authorized to access this board")
     
     activities = db.query(models.Activity).filter(models.Activity.board_id == board_id).order_by(models.Activity.created_at.desc()).limit(50).all()
     return activities
@@ -104,9 +187,17 @@ async def get_board_statistics(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    board = db.query(models.Board).filter(models.Board.id == board_id, models.Board.owner_id == current_user.id).first()
+    board = db.query(models.Board).filter(models.Board.id == board_id).first()
     if not board:
         raise HTTPException(status_code=404, detail="Board not found")
+    
+    if board.owner_id != current_user.id:
+        member = db.query(models.BoardMember).filter(
+            models.BoardMember.board_id == board_id,
+            models.BoardMember.user_id == current_user.id
+        ).first()
+        if not member:
+            raise ForbiddenException(detail="Not authorized to access this board")
     
     list_stats = db.query(
         models.List.title,
@@ -120,20 +211,43 @@ async def get_board_statistics(
         total_cards=total_cards,
         lists_statistics=[schemas.ListStatistics(name=stat.title, card_count=stat.card_count) for stat in list_stats]
     )
-
-# Get all cards for a specific board
 @router.get("/boards/{board_id}/cards", response_model=List[schemas.Card])
 async def get_board_cards(
     board_id: int,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    board = db.query(models.Board).filter(models.Board.id == board_id, models.Board.owner_id == current_user.id).first()
+    board = db.query(models.Board).filter(models.Board.id == board_id).first()
     if not board:
         raise NotFoundException(detail="Board not found")
     
+    if board.owner_id != current_user.id:
+        member = db.query(models.BoardMember).filter(
+            models.BoardMember.board_id == board_id,
+            models.BoardMember.user_id == current_user.id
+        ).first()
+        if not member:
+            raise ForbiddenException(detail="Not authorized to access this board")
+    
     cards = db.query(models.Card).join(models.List).filter(models.List.board_id == board_id).all()
     return cards
+
+# Get all cards for a specific board
+@router.get("/boards/{board_id}", response_model=schemas.Board)
+def read_board(board_id: int, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    board = db.query(models.Board).filter(models.Board.id == board_id).first()
+    if board is None:
+        raise NotFoundException(detail="Board not found")
+    
+    if board.owner_id != current_user.id:
+        member = db.query(models.BoardMember).filter(
+            models.BoardMember.board_id == board_id,
+            models.BoardMember.user_id == current_user.id
+        ).first()
+        if not member:
+            raise ForbiddenException(detail="Not authorized to access this board")
+    
+    return board
 
 @router.post("/board-templates", response_model=schemas.BoardTemplate)
 async def create_board_template(
@@ -169,20 +283,83 @@ async def create_board_from_template(
     db.commit()
     db.refresh(new_board)
     return new_board
+
+@router.post("/boards/{board_id}/members", response_model=schemas.BoardMember)
+def add_board_member(
+    board_id: int,
+    member: schemas.BoardMemberCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    board = db.query(models.Board).filter(models.Board.id == board_id, models.Board.owner_id == current_user.id).first()
+    if not board:
+        raise HTTPException(status_code=404, detail="Board not found or you don't have permission")
+    
+    new_member = models.BoardMember(**member.model_dump(), board_id=board_id)
+    db.add(new_member)
+    db.commit()
+    db.refresh(new_member)
+    return new_member
+
+@router.put("/boards/{board_id}/members/{user_id}", response_model=schemas.BoardMember)
+def update_board_member_permission(
+    board_id: int,
+    user_id: int,
+    permission: PermissionLevel,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    board = db.query(models.Board).filter(models.Board.id == board_id, models.Board.owner_id == current_user.id).first()
+    if not board:
+        raise HTTPException(status_code=404, detail="Board not found or you don't have permission")
+    
+    member = db.query(models.BoardMember).filter(models.BoardMember.board_id == board_id, models.BoardMember.user_id == user_id).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Board member not found")
+    
+    member.permission_level = permission
+    db.commit()
+    db.refresh(member)
+    return member
+
+@router.delete("/boards/{board_id}/members/{user_id}", status_code=204)
+def remove_board_member(
+    board_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    board = db.query(models.Board).filter(models.Board.id == board_id, models.Board.owner_id == current_user.id).first()
+    if not board:
+        raise HTTPException(status_code=404, detail="Board not found or you don't have permission")
+    
+    member = db.query(models.BoardMember).filter(models.BoardMember.board_id == board_id, models.BoardMember.user_id == user_id).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Board member not found")
+    
+    db.delete(member)
+    db.commit()
+    return {"detail": "Board member removed successfully"}
    
 # List routes
 # Create a new list
 @router.post("/lists/", response_model=schemas.List)
-def create_list(list: schemas.ListCreate, db: Session = Depends(get_db)):
-    # Create a new List object from the provided data
+def create_list(list: schemas.ListCreate, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
     db_list = models.List(**list.model_dump())
-    # Add the new list to the database
     db.add(db_list)
-    # Commit the changes to the database
     db.commit()
-    # Refresh the list object to ensure it reflects the current state in the database
     db.refresh(db_list)
-    # Return the newly created list
+    
+    # Log activity
+    activity = models.Activity(
+        board_id=db_list.board_id,
+        user_id=current_user.id,
+        activity_type="list_created",
+        details=f"List '{db_list.title}' created"
+    )
+    db.add(activity)
+    db.commit()
+    
     return db_list
 
 # Get all lists with pagination
@@ -255,11 +432,26 @@ def read_cards_for_list(
 
 # Card routes
 @router.post("/cards/", response_model=schemas.Card)
-def create_card(card: schemas.CardCreate, db: Session = Depends(get_db)):
+def create_card(card: schemas.CardCreate, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    list = db.query(models.List).filter(models.List.id == card.list_id).first()
+    if not list:
+        raise HTTPException(status_code=404, detail="List not found")
+    
     db_card = models.Card(**card.model_dump())
     db.add(db_card)
     db.commit()
     db.refresh(db_card)
+
+    # Log activity
+    activity = models.Activity(
+        board_id=list.board_id,
+        user_id=current_user.id,
+        activity_type="card_created",
+        details=f"Card '{db_card.title}' created in list '{list.title}'"
+    )
+    db.add(activity)
+    db.commit()
+
     return db_card
 
 @router.get("/cards/", response_model=list[schemas.Card])
@@ -328,11 +520,11 @@ async def move_card(
     return card
 
 @router.post("/cards/{card_id}/labels", response_model=schemas.Card)
-async def add_label_to_card(
-    card_id: int,
-    label: schemas.LabelCreate,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+def add_label_to_card(
+    card_id: int, 
+    label: schemas.LabelCreate, 
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
 ):
     card = db.query(models.Card).join(models.List).join(models.Board).filter(
         models.Card.id == card_id,
@@ -340,9 +532,32 @@ async def add_label_to_card(
     ).first()
     if not card:
         raise HTTPException(status_code=404, detail="Card not found")
-
+    
     new_label = models.Label(**label.model_dump(), card_id=card_id)
     db.add(new_label)
+    db.commit()
+    db.refresh(card)
+    return card
+
+@router.delete("/cards/{card_id}/labels/{label_id}", response_model=schemas.Card)
+def remove_label_from_card(
+    card_id: int, 
+    label_id: int, 
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    card = db.query(models.Card).join(models.List).join(models.Board).filter(
+        models.Card.id == card_id,
+        models.Board.owner_id == current_user.id
+    ).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    
+    label = db.query(models.Label).filter(models.Label.id == label_id, models.Label.card_id == card_id).first()
+    if not label:
+        raise HTTPException(status_code=404, detail="Label not found")
+    
+    db.delete(label)
     db.commit()
     db.refresh(card)
     return card
@@ -415,6 +630,41 @@ async def get_attachments(
 
     return card.attachments
 
+@router.post("/cards/{card_id}/comments", response_model=schemas.Comment)
+def add_comment_to_card(
+    card_id: int,
+    comment: schemas.CommentCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    card = db.query(models.Card).join(models.List).join(models.Board).filter(
+        models.Card.id == card_id,
+        models.Board.owner_id == current_user.id
+    ).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    
+    new_comment = models.Comment(**comment.model_dump(), card_id=card_id, user_id=current_user.id)
+    db.add(new_comment)
+    db.commit()
+    db.refresh(new_comment)
+    return new_comment
+
+@router.get("/cards/{card_id}/comments", response_model=List[schemas.Comment])
+def get_card_comments(
+    card_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    card = db.query(models.Card).join(models.List).join(models.Board).filter(
+        models.Card.id == card_id,
+        models.Board.owner_id == current_user.id
+    ).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    
+    return card.comments
+
 #users
 
 @router.post("/users/", response_model=schemas.User)
@@ -460,25 +710,46 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 @router.get("/search", response_model=List[schemas.SearchResult])
 async def search(
     query: str,
+    due_date_start: Optional[datetime] = None,
+    due_date_end: Optional[datetime] = None,
+    label: Optional[str] = None,
+    board_id: Optional[int] = None,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    print(f"Searching for '{query}' for user {current_user.id}")
+    # Base query for boards
+    board_query = db.query(models.Board).filter(models.Board.owner_id == current_user.id)
+    
+    # Apply board_id filter if provided
+    if board_id:
+        board_query = board_query.filter(models.Board.id == board_id)
+    
     # Search in boards
-    boards = db.query(models.Board).filter(
-        models.Board.owner_id == current_user.id,
-        models.Board.title.ilike(f"%{query}%")
-    ).all()
-    print(f"Found {len(boards)} boards")
+    boards = board_query.filter(models.Board.title.ilike(f"%{query}%")).all()
+
     # Search in lists
     lists = db.query(models.List).join(models.Board).filter(
         models.Board.owner_id == current_user.id,
         models.List.title.ilike(f"%{query}%")
     ).all()
 
-    # Search in cards
-    cards = db.query(models.Card).join(models.List).join(models.Board).filter(
-        models.Board.owner_id == current_user.id,
+    # Base query for cards
+    card_query = db.query(models.Card).join(models.List).join(models.Board).filter(
+        models.Board.owner_id == current_user.id
+    )
+    
+    # Apply filters
+    if due_date_start:
+        card_query = card_query.filter(models.Card.due_date >= due_date_start)
+    if due_date_end:
+        card_query = card_query.filter(models.Card.due_date <= due_date_end)
+    if label:
+        card_query = card_query.join(models.Label).filter(models.Label.name == label)
+    if board_id:
+        card_query = card_query.filter(models.Board.id == board_id)
+
+    # Full-text search on cards
+    cards = card_query.filter(
         or_(
             models.Card.title.ilike(f"%{query}%"),
             models.Card.description.ilike(f"%{query}%")
@@ -490,16 +761,12 @@ async def search(
         *[schemas.SearchResult(type="list", id=l.id, title=l.title) for l in lists],
         *[schemas.SearchResult(type="card", id=c.id, title=c.title) for c in cards]
     ]
-    print(f"Total search results: {len(results)}")
+
     return results
-@router.get("/search/cards", response_model=List[schemas.Card])
-async def search_cards(
-    query: str,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
-):
-    cards = db.query(models.Card).join(models.List).join(models.Board).filter(
-        models.Board.owner_id == current_user.id,
-        models.Card.title.ilike(f"%{query}%") | models.Card.description.ilike(f"%{query}%")
-    ).all()
-    return cards
+
+
+
+
+
+
+

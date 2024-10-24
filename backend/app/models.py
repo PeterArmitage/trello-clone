@@ -1,5 +1,5 @@
 # app/models.py
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -24,9 +24,9 @@ class Board(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    owner_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("User", back_populates="boards")
     lists = relationship("List", back_populates="board", cascade="all, delete-orphan")
@@ -63,7 +63,8 @@ class ActivityType(str, PyEnum):
     CARD_CREATED = "card_created"
     CARD_MOVED = "card_moved"
     CARD_ARCHIVED = "card_archived"
-
+    LIST_CREATED = "list_created"
+    
 class Activity(Base):
     __tablename__ = "activities"
 
@@ -118,3 +119,42 @@ class ListTemplate(Base):
     board_template_id = Column(Integer, ForeignKey("board_templates.id"))
 
     board_template = relationship("BoardTemplate", back_populates="lists")
+    
+class Comment(Base):
+    __tablename__ = "comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    content = Column(String)
+    card_id = Column(Integer, ForeignKey("cards.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    card = relationship("Card", back_populates="comments")
+    user = relationship("User", back_populates="comments")
+
+# Update Card and User models
+Card.comments = relationship("Comment", back_populates="card")
+User.comments = relationship("Comment", back_populates="user")    
+
+class PermissionLevel(str, PyEnum):
+    VIEW = "view"
+    EDIT = "edit"
+    ADMIN = "admin"
+
+class BoardMember(Base):
+    __tablename__ = "board_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+    board_id = Column(Integer, ForeignKey("boards.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    permission_level = Column(Enum(PermissionLevel), nullable=False, default=PermissionLevel.VIEW)
+
+    board = relationship("Board", back_populates="members")
+    user = relationship("User", back_populates="board_memberships")
+
+    
+
+# Update Board and User models
+Board.members = relationship("BoardMember", back_populates="board")
+User.board_memberships = relationship("BoardMember", back_populates="user")
